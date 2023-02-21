@@ -5,7 +5,12 @@ __pycache__/
 .DS_Store
 # C extensions
 *.so
-
+cutest/
+sifdecode/
+archdefs/
+sif/
+.SIF
+.idea/
 # Distribution / packaging
 .Python
 build/
