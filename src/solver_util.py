@@ -45,21 +45,21 @@ def makeB(b, delta, n):
     # b = |  delta(n,) |
     #     |  delta(n,) |
     m = b.shape[0]
-    b_ = np.zeros((m+2*n, 1))           
-    b_[0:m, :] = -b.copy()              # -b
-    b_[m:m+2*n, 0] = delta              # delta
+    b_ = np.zeros((m+2*n, ))           
+    b_[0:m, ] = -b.copy()              # -b
+    b_[m:m+2*n, ] = delta              # delta
     return b_
 
 def makeC(g, equatn):
     # c = | rho*g, -rho*g, e(1, m), e(1, #eq), 0(1, n), 0(1, n) |
     n = g.shape[0]
     m = equatn.shape[0]
-    c_ = np.zeros((2*m+4*n, 1))
+    c_ = np.zeros((2*m+4*n, ))
 
-    c_[0:n, :] = g.copy()
-    c_[n:2*n, :] = -g.copy()
-    c_[2*n:m+2*n, :] = 1                    
-    c_[m+2*n: 2*m+2*n, 0] = equatn.copy()   # Not sure why
+    c_[0:n, ] = g.copy()
+    c_[n:2*n, ] = -g.copy()
+    c_[2*n:m+2*n, ] = 1                    
+    c_[m+2*n: 2*m+2*n, ] = equatn.copy()   # Not sure why
     # Other entries of c is 0.
 
     # Transpose as simplex solves prefers c with shape (1, -1)

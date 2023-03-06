@@ -45,7 +45,7 @@ class Simplex:
         # Check if the size matches.
         if n < m or \
             c.shape != (n,) or \
-            b.shape != (m, 1) or \
+            b.shape != (m, ) or \
             (not basis is None and basis.shape != (m,)):
             raise ValueError("Init failed due to mis-matched input size. Abort.")
 
