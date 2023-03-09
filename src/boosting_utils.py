@@ -3,8 +3,34 @@ import numpy as np
 from solver_util import makeA, makeB, makeC, makeBasis
 import autograd.numpy as np
 import warnings
+from simplex import Simplex
 warnings.simplefilter('ignore')
-
+import pycutest as pc
+import numpy as np
+import os
+from collections import OrderedDict
+import autograd.numpy as np
+import matplotlib.pyplot as plt
+import networkx as nx
+import pandas as pd
+from autograd import grad
+from collections import Counter, defaultdict
+from itertools import compress
+from scipy.io import loadmat
+from scipy.optimize import linear_sum_assignment
+from scipy.sparse.linalg import svds
+from scipy.special import huber
+from sklearn.preprocessing import StandardScaler
+from time import process_time
+from boosting_utils import *
+import warnings
+warnings.simplefilter('ignore')
+import logging
+import pickle
+import time
+# from cuter_util import Cuter
+# from linear_solver import linearSolveTrustRegion
+from param import DustParam
 STEP_SIZE_MIN = 1e-10
 __UP = 1e20
 __LOW = -1e20
@@ -13,23 +39,28 @@ __PMAX = 1e3
 
 
 
-def cuter_extra_setup_args(cuter_problem):
+def cuter_extra_setup_args(ProblemName):
 
-    equatn = cuter_problem.is_eq_cons
-    cu = cuter_problem.cu
-    cl = cuter_problem.cl
-    bl = cuter_problem.bl
-    bu = cuter_problem.bu
-    iequatn = np.logical_not(equatn)
-    inequality_upper = np.logical_and((cu != __UP).flatten(), iequatn)
-    inequality_lower = np.logical_and((cl != __LOW).flatten(), iequatn)
-    is_lower_bound_only_constr = np.logical_and(inequality_lower, np.logical_not(inequality_upper))
-    is_double_bound_constr = np.logical_and(inequality_lower, inequality_upper)
-    bl_flag = (bl != __LOW).flatten()
-    bu_flag = (bu != __UP).flatten()
-    num_added_ineq_constr = np.sum(is_double_bound_constr) + np.sum(bl_flag) + np.sum(bu_flag)
-    added_iequatn = np.array([False] * num_added_ineq_constr, dtype=bool)
-    adjusted_equatn = np.hstack([equatn, added_iequatn])
+    cuter_problem = pc.import_problem(ProblemName)
+    pc.print_available_sif_params(ProblemName)
+    problem_properties = pc.problem_properties(ProblemName)
+    print(cuter_problem)
+    print(problem_properties)
+    equatn = cuter_problem.is_eq_cons #每个约束是否是等式约束
+    cu = cuter_problem.cu #每个约束的上界
+    cl = cuter_problem.cl #每个约束的下界
+    bl = cuter_problem.bl #每个变量的下界
+    bu = cuter_problem.bu #每个变量的上界 
+    iequatn = np.logical_not(equatn) #每个约束是否是不等式约束
+    inequality_upper = np.logical_and((np.array(cu != __UP, dtype=bool)).flatten(), iequatn) #每个不等式约束是否有上界
+    inequality_lower = np.logical_and(((np.array(cl != __LOW, dtype=bool))).flatten(), iequatn) #每个不等式约束是否有下界
+    is_lower_bound_only_constr = np.logical_and(inequality_lower, np.logical_not(inequality_upper)) #每个不等式约束是否只有下界
+    is_double_bound_constr = np.logical_and(inequality_lower, inequality_upper) #每个不等式约束是否有上下界
+    bl_flag = (bl != __LOW).flatten() #每个变量是否有下界
+    bu_flag = (bu != __UP).flatten() #每个变量是否有上界
+    num_added_ineq_constr = np.sum(is_double_bound_constr) + np.sum(bl_flag) + np.sum(bu_flag) #增加的不等式约束的个数
+    added_iequatn = np.array([False] * num_added_ineq_constr, dtype=bool) #增加的不等式约束的标志
+    adjusted_equatn = np.hstack([equatn, added_iequatn]) #所有约束的标志
     setup_args_dict = { 'x': cuter_problem.x0,
                     'bl': bl,
                     'bu': bu,
@@ -64,7 +95,7 @@ def cuter_extra_setup_args(cuter_problem):
                     "DELTA": 0.75,
                     "MIN_delta": 1e-2,
                     "MAX_delta": 64}
-    return setup_args_dict
+    return cuter_problem, setup_args_dict
 
 # No rescaling
 def v_x(c, adjusted_equatn):
@@ -76,6 +107,9 @@ def v_x(c, adjusted_equatn):
     """
     if np.any(np.isnan(c)):
         return np.nan
+    
+    
+    
     equality_violation = np.sum(np.abs(c[adjusted_equatn]))
     inequality_violation = np.sum(c[np.logical_and(np.logical_not(adjusted_equatn), (c > 0).flatten())])
 
@@ -89,10 +123,11 @@ def get_phi(x, cuter_problem, setup_args_dict):
     :param cuter instance
     :return: phi(x, rho) = f + dist(c(x) | C)
     """
-    f, _ = cuter_problem.obj(x, gradient = False)
-    c, _ = cuter_problem.cons(x, gradient=False)
-
-    return v_x(c, setup_args_dict['equatn']) + f
+    f, c = cuter_problem.objcons(x)
+    if c is None:
+        return f
+    else: 
+        return v_x(c, setup_args_dict['equatn']) + f
 
 def get_delta_phi(x0, x1,cuter_problem, setup_args_dict):
     """
@@ -111,10 +146,14 @@ def linearModelPenalty(grad_c, c, grad_f, d, adjusted_equatn):
     :param adjusted_equatn: boolean vector indicating if it is equation constraint
     :return: l(d ; x)
     """
-    c_gc = grad_c.dot(d) + c
-    linear_model = grad_f.T.dot(d) + v_x(c_gc, adjusted_equatn)
-    subg_model = grad_f.T.dot(d) + v_x(grad_c.dot(d), adjusted_equatn)
-    return linear_model[0, 0], subg_model[0, 0]
+    if grad_c is None or c is None:
+        linear_model = grad_f.T.dot(d)
+        subg_model = grad_f
+    else:
+        c_gc = grad_c.dot(d) + c
+        linear_model = grad_f.T.dot(d) + v_x(c_gc, adjusted_equatn)
+        subg_model = grad_f + v_x(grad_c, adjusted_equatn)
+    return linear_model, subg_model
 
 def l0(c, equatn):
     # Line 201
@@ -212,15 +251,13 @@ def nnmp(x, grad_f_x, align_tol, K, traffic):
     
 def boostnlp(f, grad_f, L, x, delta, cuter_problem, step='ls', f_tol=1e-6, time_tol=np.inf, align_tol=1e-3, K=500, traffic=False):
     
-    dual_var = np.zeros(cuter_problem.m)
-    primal_var = np.zeros(cuter_problem.n)
-    l_0 = l0(cuter_problem.cons(x), cuter_problem.is_eq_cons)
-    
+    n = cuter_problem.n
+    lll = lmo(grad_f, n, delta)
     if traffic == False:
-        values, times, oracles, gaps = [f], [0], [0], [np.dot(grad_f, x-lmo(grad_f))]
+        values, times, oracles, gaps = [f], [0], [0], [np.dot(grad_f, x-lmo(grad_f, n, delta))]
         f_improv = np.inf
 
-        x = lmo(grad_f, cuter_problem.n, delta)
+        x = lmo(grad_f, n, delta)
         values.append(f)
         oracles.append(1)
     else:
@@ -231,7 +268,7 @@ def boostnlp(f, grad_f, L, x, delta, cuter_problem, step='ls', f_tol=1e-6, time_
                 
         f_old = f
         grad_f_x = grad_f
-        gaps.append(np.dot(grad_f_x, x-lmo(grad_f_x)))
+        gaps.append(np.dot(grad_f_x, x-lmo(grad_f_x, n, delta)))
         g, num_oracles, align_g = nnmp(x, grad_f_x, align_tol, K, traffic)
         
         if step == 'L':
@@ -249,7 +286,7 @@ def boostnlp(f, grad_f, L, x, delta, cuter_problem, step='ls', f_tol=1e-6, time_
         
         
         
-    return gamma, x, l_0
+    return gamma, x
 
 
 
@@ -269,12 +306,9 @@ def get_KKT(grad_c, c, grad_f, eta):
 
 
 
-def lmo(gradf, n, TrustRegRad):
-    V = TrustRegRad*np.identity(2*n)
-    return V[np.argmin(gradf)]
 
 
-def get_f_gradf_c_gradc_violation(cuter_problem, x):
+def get_f_gradf_c_gradc_violation(cuter_problem, adjusted_equatn, x):
     """
     Get objective function value, gradient, constraint function value and gradient
     :param cuter_problem: cuter problem instance
@@ -283,9 +317,41 @@ def get_f_gradf_c_gradc_violation(cuter_problem, x):
     """
     
     f, grad_f = cuter_problem.obj(x, gradient=True)
-    c, grad_c = cuter_problem.cons(x, gradient=True)
-    violation = v_x(c, cuter_problem.is_eq_cons)
-    return f, grad_f, c, grad_c, violation
+    if cuter_problem.m == 0:
+        return f, grad_f, None, None, None
+    else:
+        c, grad_c = cuter_problem.cons(x, gradient=True)
+        violation = v_x(c, adjusted_equatn)
+        return f, grad_f, c, grad_c, violation
+
+
+
+def get_dual_var(grad_c, c, grad_f, x_k, delta, cuter_problem, setup_args_dict):
+    equatn = setup_args_dict['adjusted_equatn']
+    n = cuter_problem.n
+    m = cuter_problem.m
+    l_0 = l0(c, equatn)
+    c_, A_, b_, basis_ = makeC(grad_f, cuter_problem.is_eq_cons), makeA(grad_c), makeB(c, delta, n), makeBasis(c, n)
+    linsov = Simplex(c_, A_, b_, basis_)
+    primal = linsov.getPrimalVar()
+    primal_var = primal[0:n] - primal[n:2*n]
+    dual = -linsov.getDualVar()
+    dual_var = dual[0, 0:m]
+        # Truncation in-equality constraint to [0, 1], equality constraint to [-1, 1]
+    dual_var = np.maximum(np.minimum(dual_var, np.ones([m])), -1 * equatn)
+    ratio_opt = getRatio(grad_c, c, grad_f, primal, dual_var, delta, equatn, l_0)
+    return dual_var.reshape((m, 1)), ratio_opt
+
+
+def lmo(grad_phi, d, n, TrustRegRad):
+    TrustReg = 
+    s_gp = grad_phi.shape
+    
+    
+    
+    
+    
+    return d
 
 
 
@@ -301,14 +367,14 @@ def linearSolveTrustRegion(cuter_problem, setup_args_dict):
                 1 - solve the problem to optimality
     """         
 
-    x_0 = setup_args_dict['x']
-    adjusted_equatn = cuter_problem.is_eq_cons
+    x_0 = cuter_problem.x0
+    adjusted_equatn = setup_args_dict['equatn']
     zero_d = np.zeros(x_0.shape)
     i, status = 0, -1
     x_k = x_0.copy()
     L = 0
-    
-    f, grad_f, c, grad_c, violation = get_f_gradf_c_gradc_violation(cuter_problem, x_k)
+    n = cuter_problem.n
+    f, grad_f, c, grad_c, violation = get_f_gradf_c_gradc_violation(cuter_problem, adjusted_equatn, x_k)
     max_iter = setup_args_dict['max_iter']
     delta = setup_args_dict['init_delta']; 
     
@@ -318,16 +384,19 @@ def linearSolveTrustRegion(cuter_problem, setup_args_dict):
         # Subproblem here.
         l_0_x_k, subg_0_x_k = linearModelPenalty(grad_c, c, grad_f, zero_d, adjusted_equatn)
         
-        d_k, x_k, l_0 = boostnlp(phi, subg_0_x_k, L , x_k , delta, cuter_problem, setup_args_dict, step='ls', f_tol=1e-6, time_tol=np.inf, align_tol=1e-3, K=500, traffic=False)
+        
+        d_k, x_k = boostnlp(phi, subg_0_x_k, L , x_k , delta, cuter_problem, step='ls', f_tol=1e-6, time_tol=np.inf, align_tol=1e-3, K=500, traffic=False)
         
         
         l_d_x_k, subg_d_x_k = linearModelPenalty(grad_c, c, grad_f, d_k, adjusted_equatn)
         delta_linearized_model = l_0_x_k - l_d_x_k
         
+        
+        dual_var, ratio_opt = get_dual_var(grad_c, c, grad_f, x_k, delta, cuter_problem, setup_args_dict)
         kkt_error_k = get_KKT(grad_c, c, grad_f, dual_var)
         
         init_kkt = max(kkt_error_k, 1)
-        ratio_opt = getRatio(grad_c, c, grad_f, primal, dual_var, delta, cuter_problem.is_eq_cons, l_0)
+        
         # Update delta.
         if ratio_opt > 0:
             sigma = get_delta_phi(x_k, x_k+d_k, cuter_problem, setup_args_dict) / (delta_linearized_model + 1e-5)
@@ -339,12 +408,18 @@ def linearSolveTrustRegion(cuter_problem, setup_args_dict):
             elif sigma > setup_args_dict['DELTA']:
                 delta = min(2*delta, setup_args_dict['MAX_delta'])
                 
-        
-        
         # ratio_opt: 3.6. It's actually r_v in paper.
-        f, grad_f, c, grad_c, violation = get_f_gradf_c_gradc_violation(cuter_problem, x_k)
+        f, grad_f, c, grad_c, violation = get_f_gradf_c_gradc_violation(cuter_problem, setup_args_dict['adjusted_equatn'], x_k)
         kkt_error_k = get_KKT(grad_c, c, grad_f, dual_var) / init_kkt
         if kkt_error_k < setup_args_dict['eps_opt'] and violation < setup_args_dict['eps_violation']:
             status = 1
             break
         i += 1
+
+
+
+
+if __name__ == "__main__":
+    ProblemName = 'HS20'
+    p, setup_args_dict = cuter_extra_setup_args(ProblemName)
+    linearSolveTrustRegion(p, setup_args_dict)
