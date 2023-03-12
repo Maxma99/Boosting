@@ -344,7 +344,7 @@ def get_dual_var(grad_c, c, grad_f, x_k, delta, cuter_problem, setup_args_dict):
 
 
 def lmo(grad_phi, d, n, TrustRegRad):
-    TrustReg = 
+    TrustReg = None
     s_gp = grad_phi.shape
     
     
@@ -423,3 +423,4 @@ if __name__ == "__main__":
     ProblemName = 'HS20'
     p, setup_args_dict = cuter_extra_setup_args(ProblemName)
     linearSolveTrustRegion(p, setup_args_dict)
+
